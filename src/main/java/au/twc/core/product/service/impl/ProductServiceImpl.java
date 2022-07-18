@@ -21,6 +21,7 @@ import org.springframework.http.*;
 import org.springframework.stereotype.Service;
 import org.springframework.web.client.RestTemplate;
 import org.springframework.web.multipart.MultipartFile;
+import org.springframework.web.util.UriUtils;
 import org.supercsv.cellprocessor.ParseLong;
 import org.supercsv.cellprocessor.constraint.NotNull;
 import org.supercsv.cellprocessor.ift.CellProcessor;
@@ -29,6 +30,8 @@ import org.supercsv.io.ICsvMapReader;
 import org.supercsv.prefs.CsvPreference;
 
 import java.io.*;
+import java.net.URI;
+import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.text.DecimalFormat;
 import java.util.*;
@@ -120,6 +123,7 @@ public class ProductServiceImpl implements ProductService {
         map.entrySet().stream().forEach(products -> {
             List<CSVToProduct> list = products.getValue();
             Boolean isProductNotExists = true;//getProductByRef(list.get(0).getProductRef());
+            Boolean isProductNotExists1 = getProductByRef(list.get(0).getProductRef());
             if (isProductNotExists) {
                 Product prdt = new Product();
                 BeanUtils.copyProperties(list.get(0), prdt);
@@ -312,6 +316,17 @@ public class ProductServiceImpl implements ProductService {
     }
 
     private Boolean getProductByRef(String productRef) {
+
+        StringBuilder builder = new StringBuilder("https://api.au-sandbox.thewishlist.io/services/productsvc/api/v2/products/");
+//        try {
+            builder.append(UriUtils.encode(productRef,StandardCharsets.UTF_8.toString()));
+//            builder.append(URLEncoder.encode(productRef,StandardCharsets.UTF_8.toString()));
+            builder.append("/byref");
+//        } catch (UnsupportedEncodingException e) {
+//            e.printStackTrace();
+//        }
+
+
         String url = "https://api.au-sandbox.thewishlist.io/services/productsvc/api/v2/products/" + productRef + "/byref";
         HttpHeaders headers = new HttpHeaders();
 
@@ -321,10 +336,11 @@ public class ProductServiceImpl implements ProductService {
         headers.set("Authorization", getToken());
         // build the request
         HttpEntity<ProductPrice> entity = new HttpEntity<>(headers);
+        URI uri = URI.create(builder.toString());
         Boolean result = false;
         // send POST request
         try {
-            ResponseEntity<String> response = restTemplate.exchange(url, HttpMethod.GET, entity, String.class);
+            ResponseEntity<String> response = restTemplate.exchange(uri, HttpMethod.GET, entity, String.class);
             String responseObject = response.getBody();
         } catch (Exception e) {
             result = true;
