@@ -21,7 +21,6 @@ import org.springframework.http.*;
 import org.springframework.stereotype.Service;
 import org.springframework.web.client.RestTemplate;
 import org.springframework.web.multipart.MultipartFile;
-import org.springframework.web.util.UriUtils;
 import org.supercsv.cellprocessor.ParseLong;
 import org.supercsv.cellprocessor.constraint.NotNull;
 import org.supercsv.cellprocessor.ift.CellProcessor;
@@ -30,8 +29,6 @@ import org.supercsv.io.ICsvMapReader;
 import org.supercsv.prefs.CsvPreference;
 
 import java.io.*;
-import java.net.URI;
-import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.text.DecimalFormat;
 import java.util.*;
@@ -47,14 +44,16 @@ public class ProductServiceImpl implements ProductService {
 
     @Override
     public CSVImportResponseDTO importProductCSV(MultipartFile file) throws IOException, CsvException {
-        CSVImportResponseDTO responseData = convertCSV(file);
+        CSVImportResponseDTO responseData = convertCSVBasedOnCSVReaderBuilder(file);
+//        CSVImportResponseDTO responseData1 = convertCSVBasedOnCsvToBeanBuilder(file);
         return responseData;
     }
 
-    private CSVImportResponseDTO convertCSV(MultipartFile file) throws IOException, CsvException {
+    private CSVImportResponseDTO convertCSVBasedOnCSVReaderBuilder(MultipartFile file) throws IOException, CsvException {
         RFC4180Parser rfc4180Parser = new RFC4180ParserBuilder().build();
         Reader reader = getReader(file);
 //        testSuperCSV(reader);
+
         CSVReader csvReader = new CSVReaderBuilder(reader)
                 .withSkipLines(1).withCSVParser(rfc4180Parser) // Skiping firstline as it is header
                 .build();
@@ -66,31 +65,27 @@ public class ProductServiceImpl implements ProductService {
             csvToProduct.setGtin(data[0]);
             csvToProduct.setDescription(data[1]);
             csvToProduct.setPrice(data[2]);
-            csvToProduct.setProductRef(StringEscapeUtils.unescapeCsv(data[3]));
+            if(data[7].equalsIgnoreCase("VM")) {
+                csvToProduct.setProductRef(StringEscapeUtils.unescapeCsv(data[3]).replaceAll("\\\\",""));
+            }
+            else{
+                csvToProduct.setProductRef(StringEscapeUtils.unescapeCsv(data[3]));
+            }
             csvToProduct.setSize(data[4]);
             csvToProduct.setColor(data[5]);
             csvToProduct.setTitle(data[6]);
             csvToProduct.setBrandName(data[7]);
             return csvToProduct;
         }).collect(Collectors.toList());
+        return getResponseDTO(productsList);
+    }
+
+
+
+    public CSVImportResponseDTO getResponseDTO(List<CSVToProduct> productsList){
         Map<String, List<CSVToProduct>> map = productsList.stream()
                 .collect(Collectors.groupingBy(CSVToProduct::getProductRef));
         CSVImportResponseDTO products = getProducts(map);
-        return products;
-    }
-
-    private List<CSVToProduct> getData(MultipartFile file) throws IOException {
-        List<CSVToProduct> products = new ArrayList<>();
-        Reader reader = getReader(file);
-        CsvToBean<CSVToProduct> csvToProductMappings = new CsvToBeanBuilder<CSVToProduct>(reader)
-                .withType(CSVToProduct.class).withIgnoreLeadingWhiteSpace(true).build();
-        if (Objects.nonNull(csvToProductMappings)) {
-            Iterator<CSVToProduct> csvToProductIterator = csvToProductMappings.iterator();
-            while (csvToProductIterator.hasNext()) {
-                products.add(csvToProductIterator.next());
-            }
-        }
-
         return products;
     }
 
@@ -102,7 +97,6 @@ public class ProductServiceImpl implements ProductService {
             formatter = new DecimalFormat("0.00"); //Here you can also deal with rounding if you wish..
         else
             formatter = new DecimalFormat("0");
-
         return formatter.format(value);
     }
 
@@ -122,8 +116,7 @@ public class ProductServiceImpl implements ProductService {
         List<ProductPrice> finalProductPrices = new ArrayList<>();
         map.entrySet().stream().forEach(products -> {
             List<CSVToProduct> list = products.getValue();
-            Boolean isProductNotExists = true;//getProductByRef(list.get(0).getProductRef());
-            Boolean isProductNotExists1 = getProductByRef(list.get(0).getProductRef());
+            Boolean isProductNotExists = getProductByRef(list.get(0).getProductRef());
             if (isProductNotExists) {
                 Product prdt = new Product();
                 BeanUtils.copyProperties(list.get(0), prdt);
@@ -131,14 +124,15 @@ public class ProductServiceImpl implements ProductService {
                 responseData.setSuccessData(successSet);
                 responseData.setFailedData(failedSet);
             }
-            getProductVariantsList(list, responseData);
-            successData.add(responseData);
+            else{
+                failedSet.add(list.get(0).getProductRef() + " - Product Already Exists");
+                responseData.setFailedData(failedSet);
+            }
+            saveProductVariantsAndPriceList(list, responseData);
         });
+        successData.add(responseData);
         csvImportResponseDTO.setResponse(successData);
-//        String productJson = gson.toJson(finalProducts);
-//        String productVariantJson = gson.toJson(finalProductVariants);
-//        String productPriceJson = gson.toJson(finalProductPrices);
-//        System.out.println(productJson);
+
         return csvImportResponseDTO;
     }
 
@@ -156,12 +150,12 @@ public class ProductServiceImpl implements ProductService {
         return productPrices;
     }
 
-    private void getProductVariantsList(List<CSVToProduct> products, ProductResponse responseData) {
+    private void saveProductVariantsAndPriceList(List<CSVToProduct> products, ProductResponse responseData) {
         products.stream().forEach(product -> {
             ProductVariant productNew = new ProductVariant();
             productNew.setGtin(product.getGtin());
             productNew.setDescription(product.getDescription());
-            productNew.setProductRef(product.getProductRef() + "_" + product.getColor() + "_" + product.getSize());
+            productNew.setProductRef((product.getProductRef() + "_" + product.getColor() + "_" + product.getSize()).replaceAll("\\s", ""));
             productNew.setBaseProductRef(product.getProductRef());
             productNew.setColor(product.getColor());
             productNew.setTitle(product.getTitle());
@@ -170,20 +164,31 @@ public class ProductServiceImpl implements ProductService {
             variance.setColor(product.getColor());
             variance.setSize(product.getSize());
             productNew.setVariance(variance);
-            ProductVariantResponse productVariant = saveProductVariants(productNew, responseData.getSuccessVariantData(), responseData.getFailedVariantData());
-            if (StringUtils.isNotEmpty(productVariant.getId())) {
-//                System.out.println(productVariant.getId());
-                ProductPrice productPrice = new ProductPrice();
-                productPrice.setActive(Boolean.TRUE);
-                productPrice.setPriceRef(product.getProductRef() + "_" + product.getColor() + "_" + product.getSize());
-                productPrice.setPrice(product.getPrice());
-                productPrice.setSalePrice(product.getPrice());
-                productPrice.setProductVariantId(productVariant.getId());
-                productPrice.setCurrencyCode("AUD");
-                productPrice.setSale(Boolean.TRUE);
-                saveProductPrices(productPrice, responseData.getSuccessPriceData(), responseData.getFailedPriceData());
+            ProductVariantResponse retProductVariant = getProductVariantByRef(productNew.getProductRef());
+            if(StringUtils.isBlank(retProductVariant.getId())){
+                ProductVariantResponse productVariant = saveProductVariants(productNew, responseData.getSuccessVariantData(), responseData.getFailedVariantData());
+                saveProductPrice(product,productVariant,responseData);
+            } else{
+                responseData.getFailedVariantData().add(productNew.getProductRef() + " - Product Variant Already Exists");
+                saveProductPrice(product,retProductVariant,responseData);
             }
+
         });
+    }
+
+    private void saveProductPrice(CSVToProduct product,ProductVariantResponse productVariant,ProductResponse responseData){
+        if (StringUtils.isNotBlank(productVariant.getId())) {
+//            System.out.println(productVariant.getId());
+            ProductPrice productPrice = new ProductPrice();
+            productPrice.setActive(Boolean.TRUE);
+            productPrice.setPriceRef((product.getProductRef() + "_" + product.getColor() + "_" + product.getSize()).replaceAll("\\s", ""));
+            productPrice.setPrice(product.getPrice());
+            productPrice.setSalePrice(product.getPrice());
+            productPrice.setProductVariantId(productVariant.getId());
+            productPrice.setCurrencyCode("AUD");
+            productPrice.setSale(Boolean.TRUE);
+            saveProductPrices(productPrice, responseData.getSuccessPriceData(), responseData.getFailedPriceData());
+        }
     }
 
     private Reader getReader(File file) throws IOException {
@@ -197,10 +202,11 @@ public class ProductServiceImpl implements ProductService {
 
     private String getToken() {
         String url = "https://auth.au-sandbox.thewishlist.io/auth/realms/sunils_electronics/protocol/openid-connect/token";
-        HttpHeaders headers = new HttpHeaders();
 
+        HttpHeaders headers = new HttpHeaders();
         headers.setContentType(MediaType.APPLICATION_FORM_URLENCODED);
         headers.setAccept(Collections.singletonList(MediaType.ALL));
+
         Map<String, Object> map = new HashMap<>();
         map.put("grant_type", "client_credentials");
         map.put("client_id", "twc_admin");
@@ -216,14 +222,8 @@ public class ProductServiceImpl implements ProductService {
 
     private String saveProducts(Product product, Set<String> successList, Set<String> failedList) {
         String url = "https://api.au-sandbox.thewishlist.io/services/productsvc/api/v2/products";
-        HttpHeaders headers = new HttpHeaders();
-
-        headers.setContentType(MediaType.APPLICATION_JSON);
-        headers.setAccept(Collections.singletonList(MediaType.ALL));
-        headers.set("X-TWC-Tenant", "sunils_electronics");
-        headers.set("Authorization", getToken());
         // build the request
-        HttpEntity<Product> entity = new HttpEntity<>(product, headers);
+        HttpEntity<Product> entity = new HttpEntity<>(product, getHeader());
         ResponseEntity<String> response = null;
         String responseObject = "";
         // send POST request
@@ -250,13 +250,8 @@ public class ProductServiceImpl implements ProductService {
 
     private ProductVariantResponse saveProductVariants(ProductVariant productVariant, Set<String> successList, Set<String> failedList) {
         String url = "https://api.au-sandbox.thewishlist.io/services/productsvc/api/v2/products/variants";
-        HttpHeaders headers = new HttpHeaders();
-        headers.setContentType(MediaType.APPLICATION_JSON);
-        headers.setAccept(Collections.singletonList(MediaType.ALL));
-        headers.set("X-TWC-Tenant", "sunils_electronics");
-        headers.set("Authorization", getToken());
         // build the request
-        HttpEntity<ProductVariant> entity = new HttpEntity<>(productVariant, headers);
+        HttpEntity<ProductVariant> entity = new HttpEntity<>(productVariant, getHeader());
         // send POST request
         ResponseEntity<String> response = null;
         String responseObject = "";
@@ -285,14 +280,9 @@ public class ProductServiceImpl implements ProductService {
 
     private String saveProductPrices(ProductPrice productPrice, Set<String> successList, Set<String> failedList) {
         String url = "https://api.au-sandbox.thewishlist.io/services/pricesvc/api/prices?novalidate=true";
-        HttpHeaders headers = new HttpHeaders();
 
-        headers.setContentType(MediaType.APPLICATION_JSON);
-        headers.setAccept(Collections.singletonList(MediaType.ALL));
-        headers.set("X-TWC-Tenant", "sunils_electronics");
-        headers.set("Authorization", getToken());
         // build the request
-        HttpEntity<ProductPrice> entity = new HttpEntity<>(productPrice, headers);
+        HttpEntity<ProductPrice> entity = new HttpEntity<>(productPrice, getHeader());
         ResponseEntity<String> response = null;
         String responseObject = "";
         // send POST request
@@ -312,41 +302,73 @@ public class ProductServiceImpl implements ProductService {
             responseObject = response.getBody();
             successList.add(productPrice.getPriceRef());
         }
+//        System.out.println(responseObject);
         return responseObject;
     }
 
     private Boolean getProductByRef(String productRef) {
-
-        StringBuilder builder = new StringBuilder("https://api.au-sandbox.thewishlist.io/services/productsvc/api/v2/products/");
-//        try {
-            builder.append(UriUtils.encode(productRef,StandardCharsets.UTF_8.toString()));
-//            builder.append(URLEncoder.encode(productRef,StandardCharsets.UTF_8.toString()));
-            builder.append("/byref");
-//        } catch (UnsupportedEncodingException e) {
-//            e.printStackTrace();
-//        }
-
-
         String url = "https://api.au-sandbox.thewishlist.io/services/productsvc/api/v2/products/" + productRef + "/byref";
-        HttpHeaders headers = new HttpHeaders();
-
-        headers.setContentType(MediaType.APPLICATION_JSON);
-        headers.setAccept(Collections.singletonList(MediaType.ALL));
-        headers.set("X-TWC-Tenant", "sunils_electronics");
-        headers.set("Authorization", getToken());
         // build the request
-        HttpEntity<ProductPrice> entity = new HttpEntity<>(headers);
-        URI uri = URI.create(builder.toString());
+        HttpEntity<Product> entity = new HttpEntity<>(getHeader());
         Boolean result = false;
-        // send POST request
+        // send GET request
         try {
-            ResponseEntity<String> response = restTemplate.exchange(uri, HttpMethod.GET, entity, String.class);
+            ResponseEntity<String> response = restTemplate.exchange(url, HttpMethod.GET, entity, String.class);
             String responseObject = response.getBody();
         } catch (Exception e) {
             result = true;
         }
 //        String res gson.fromJson(responseObject,AuthToken.class);
         return result;
+    }
+
+
+    private ProductVariantResponse getProductVariantByRef(String productVariantRef) {
+        String url = "https://api.au-sandbox.thewishlist.io/services/productsvc/api/v2/products/variants/" + productVariantRef +"/byref" ;
+
+        // build the request
+        HttpEntity<ProductVariant> entity = new HttpEntity<>(getHeader());
+        ProductVariantResponse res = new ProductVariantResponse();
+        // send GET  request
+        try {
+            ResponseEntity<String> response = restTemplate.exchange(url, HttpMethod.GET, entity, String.class);
+            String responseObject = response.getBody();
+            res =gson.fromJson(responseObject,ProductVariantResponse.class);
+        } catch (Exception e) {
+
+        }
+
+        return res;
+    }
+
+
+    private HttpHeaders getHeader(){
+        HttpHeaders headers = new HttpHeaders();
+        headers.setContentType(MediaType.APPLICATION_JSON);
+        headers.setAccept(Collections.singletonList(MediaType.ALL));
+        headers.set("X-TWC-Tenant", "sunils_electronics");
+        headers.set("Authorization", getToken());
+        return headers;
+    }
+
+
+    private CSVImportResponseDTO convertCSVBasedOnCsvToBeanBuilder(MultipartFile file) throws IOException {
+        List<CSVToProduct> products = new ArrayList<>();
+        List<CSVToProduct> products1 = new ArrayList<>();
+        Reader reader = getReader(file);
+        CsvToBean<CSVToProduct> csvToProductMappings = new CsvToBeanBuilder<CSVToProduct>(reader)
+                .withType(CSVToProduct.class).withIgnoreLeadingWhiteSpace(true).build();
+        if (Objects.nonNull(csvToProductMappings)) {
+          /*  Iterator<CSVToProduct> csvToProductIterator = csvToProductMappings.iterator();
+            while (csvToProductIterator.hasNext()) {
+                products.add(csvToProductIterator.next());
+            }*/
+
+            csvToProductMappings.stream().forEach(mappings -> {
+                products1.add(mappings);
+            });
+        }
+        return getResponseDTO(products1);
     }
 
     public void testSuperCSV(Reader reader) {
